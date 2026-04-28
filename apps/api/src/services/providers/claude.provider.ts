@@ -14,12 +14,13 @@ export class ClaudeProvider implements IAiProvider {
     this.client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
   }
 
-  async generateDraft(dto: AiDraftDto & { prompt: string }): Promise<AiDraftResult> {
+  async generateDraft(dto: AiDraftDto & { prompt: string; system?: string }): Promise<AiDraftResult> {
     logger.info(`[AI:Claude] Generating draft — model: ${env.CLAUDE_MODEL}`);
 
     const message = await this.client.messages.create({
-      model: env.CLAUDE_MODEL,
-      max_tokens: 2000,
+      model:      env.CLAUDE_MODEL,
+      max_tokens: 4096,
+      ...(dto.system ? { system: dto.system } : {}),
       messages: [{ role: 'user', content: dto.prompt }],
     });
 
@@ -31,10 +32,11 @@ export class ClaudeProvider implements IAiProvider {
     return { content: content.trim(), model: env.CLAUDE_MODEL, provider: 'claude' };
   }
 
-  async streamDraft(dto: AiDraftDto & { prompt: string }, onChunk: (text: string) => void): Promise<void> {
+  async streamDraft(dto: AiDraftDto & { prompt: string; system?: string }, onChunk: (text: string) => void): Promise<void> {
     const stream = this.client.messages.stream({
-      model: env.CLAUDE_MODEL,
-      max_tokens: 2000,
+      model:      env.CLAUDE_MODEL,
+      max_tokens: 4096,
+      ...(dto.system ? { system: dto.system } : {}),
       messages: [{ role: 'user', content: dto.prompt }],
     });
 

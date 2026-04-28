@@ -891,18 +891,3 @@ export async function runSeed(): Promise<void> {
   console.log(`[Seed] ${PROPOSALS.length} proposals seeded with sections, costs, timelines, comments, and audit logs`);
 }
 
-// ─── Entry point ─────────────────────────────────────────────────────────────
-AppDataSource.initialize()
-  .then(() => {
-    console.log('[Seed] Database connected');
-    return runSeed();
-  })
-  .then(() => {
-    console.log('[Seed] Complete');
-    return AppDataSource.destroy();
-  })
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('[Seed] Failed:', err);
-    process.exit(1);
-  });

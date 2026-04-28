@@ -1,25 +1,20 @@
-import { AppDataSource } from '@biopropose/database';
-import { ProposalSectionEntity } from '@biopropose/database';
+import { dal } from '../clients/dal.client';
 import { AppError } from '../middleware/errorHandler';
 import { auditService } from './audit.service';
 import { AuditAction } from '@biopropose/shared-types';
 import { detectChanges } from '../utils/proposalDiff';
+import { syncProposalToQdrant } from './vectorSync.service';
+import { logger } from '../config/logger';
 import type { UpdateSectionDto } from '../validators/section.validators';
+import type { ProposalSectionEntity } from '@biopropose/database';
 
 export class SectionService {
-  private get repo() { return AppDataSource.getRepository(ProposalSectionEntity); }
-
   async getByProposal(proposalId: string): Promise<ProposalSectionEntity[]> {
-    return this.repo.find({
-      where: { proposalId },
-      order: { sortOrder: 'ASC' },
-    });
+    return dal.getSections(proposalId) as Promise<ProposalSectionEntity[]>;
   }
 
   async getOne(proposalId: string, sectionKey: string): Promise<ProposalSectionEntity> {
-    const section = await this.repo.findOne({ where: { proposalId, sectionKey } });
-    if (!section) throw new AppError(404, `Section '${sectionKey}' not found`, 'NOT_FOUND');
-    return section;
+    return dal.getSection(proposalId, sectionKey) as Promise<ProposalSectionEntity>;
   }
 
   async update(
@@ -38,45 +33,50 @@ export class SectionService {
     const oldData = { ...section } as Record<string, unknown>;
     let action = AuditAction.UPDATED;
 
-    if (dto.content !== undefined) section.content = dto.content;
+    const updates: Partial<ProposalSectionEntity> = { updatedBy: dto.updatedBy };
+
+    if (dto.content !== undefined) updates.content = dto.content as ProposalSectionEntity['content'];
 
     if (dto.isComplete !== undefined) {
-      section.isComplete = dto.isComplete;
+      updates.isComplete = dto.isComplete;
       if (dto.isComplete) {
-        section.completedBy = dto.updatedBy;
-        section.completedAt = new Date().toISOString();
+        updates.completedBy = dto.updatedBy;
+        updates.completedAt = new Date().toISOString();
         action = AuditAction.SECTION_COMPLETED;
       } else {
-        section.completedBy = undefined;
-        section.completedAt = undefined;
+        (updates as Record<string, unknown>).completedBy = null;
+        (updates as Record<string, unknown>).completedAt = null;
       }
     }
 
     if (dto.isLocked !== undefined) {
-      section.isLocked = dto.isLocked;
+      updates.isLocked = dto.isLocked;
       if (dto.isLocked) {
-        section.lockedBy = dto.updatedBy;
+        updates.lockedBy = dto.updatedBy;
         action = AuditAction.SECTION_LOCKED;
       } else {
-        section.lockedBy = undefined;
+        (updates as Record<string, unknown>).lockedBy = null;
         action = AuditAction.SECTION_UNLOCKED;
       }
     }
 
-    section.updatedBy = dto.updatedBy;
-    await this.repo.save(section);
+    const updated = await dal.updateSection(proposalId, sectionKey, updates) as ProposalSectionEntity;
 
-    const changes = detectChanges(oldData, section as unknown as Record<string, unknown>);
+    const changes = detectChanges(oldData, updated as unknown as Record<string, unknown>);
     await auditService.log({
       proposalId,
       userEmail: dto.updatedBy,
-      userName: dto.updatedBy,
+      userName:  dto.updatedBy,
       action,
-      details: `Section "${section.title}": ${changes.join('; ')}`,
-      changes: { sectionKey, changes },
+      details:   `Section "${section.title}": ${changes.join('; ')}`,
+      changes:   { sectionKey, changes },
     });
 
-    return section;
+    if (dto.content !== undefined) {
+      syncProposalToQdrant(proposalId).catch((err) => logger.warn({ err }, '[VectorSync] Post-section-save sync failed'));
+    }
+
+    return updated;
   }
 }
 

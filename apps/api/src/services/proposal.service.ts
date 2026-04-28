@@ -1,130 +1,98 @@
-import { AppDataSource } from '@biopropose/database';
-import {
-  ProposalEntity, ProposalSectionEntity, TemplateEntity,
-} from '@biopropose/database';
+import { dal } from '../clients/dal.client';
 import {
   ProposalStatus, ProposalStage, ProposalMethod,
   SectionKey, AuditAction,
 } from '@biopropose/shared-types';
-import { Like, FindOptionsWhere } from 'typeorm';
 import { v4 as uuid } from 'uuid';
 import { AppError } from '../middleware/errorHandler';
+import { logger } from '../config/logger';
 import { auditService } from './audit.service';
 import {
   validateStageAdvancement, computeCompletionPercentage, getStageName,
 } from '../utils/stageAdvancement';
 import { detectChanges } from '../utils/proposalDiff';
+import { syncProposalToQdrant } from './vectorSync.service';
 import type {
   CreateProposalDto, UpdateProposalDto, AdvanceStageDto,
   AmendmentDto, ReopenDto, ListProposalsQuery,
 } from '../validators/proposal.validators';
+import type { ProposalEntity, ProposalSectionEntity } from '@biopropose/database';
 
-// Default sections created for every new proposal
 const DEFAULT_SECTIONS = [
   { sectionKey: SectionKey.CEO_LETTER,        title: 'CEO Letter',         sortOrder: 0 },
   { sectionKey: SectionKey.EXECUTIVE_SUMMARY, title: 'Executive Summary',  sortOrder: 1 },
   { sectionKey: SectionKey.SCOPE_OF_WORK,     title: 'Scope of Work',      sortOrder: 2 },
-  { sectionKey: SectionKey.PROJECT_DETAILS,   title: 'Project Details',    sortOrder: 3 },
-  { sectionKey: SectionKey.TERMS_CONDITIONS,  title: 'Terms & Conditions', sortOrder: 4 },
+  { sectionKey: SectionKey.FLOWCHART,         title: 'Flow Chart',         sortOrder: 3 },
+  { sectionKey: SectionKey.PROJECT_DETAILS,   title: 'Project Details',    sortOrder: 4 },
+  { sectionKey: SectionKey.TERMS_CONDITIONS,  title: 'Terms & Conditions', sortOrder: 5 },
 ];
 
 export class ProposalService {
-  private get repo()         { return AppDataSource.getRepository(ProposalEntity); }
-  private get sectionRepo()  { return AppDataSource.getRepository(ProposalSectionEntity); }
-  private get templateRepo() { return AppDataSource.getRepository(TemplateEntity); }
-
-  // ── List ─────────────────────────────────────────────────────────────────
+  // ── List ──────────────────────────────────────────────────────────────────
 
   async list(query: ListProposalsQuery): Promise<{ items: ProposalEntity[]; total: number }> {
-    if (query.search) {
-      const qb = this.repo.createQueryBuilder('p');
-      // Trim and limit search to prevent expensive wildcard scans
-      const term = query.search.trim().slice(0, 200);
-      qb.where(
-        '(p.name LIKE :s OR p.client LIKE :s OR p.proposalCode LIKE :s)',
-        { s: `%${term}%` },
-      );
-      if (query.status) qb.andWhere('p.status = :status', { status: query.status });
-      if (query.stage)  qb.andWhere('p.currentStage = :stage', { stage: query.stage });
-      qb.orderBy(`p.${query.sortBy}`, query.sortOrder.toUpperCase() as 'ASC' | 'DESC');
-      qb.skip((query.page - 1) * query.limit).take(query.limit);
-      const [items, total] = await qb.getManyAndCount();
-      return { items, total };
-    }
-
-    const where: FindOptionsWhere<ProposalEntity> = {};
-    if (query.status) where.status = query.status as ProposalStatus;
-    if (query.stage)  where.currentStage = query.stage as ProposalStage;
-
-    const [items, total] = await this.repo.findAndCount({
-      where,
-      order: { [query.sortBy]: query.sortOrder.toUpperCase() as 'ASC' | 'DESC' },
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
+    const result = await dal.listProposals({
+      search:    query.search,
+      status:    query.status,
+      stage:     query.stage,
+      sortBy:    query.sortBy,
+      sortOrder: query.sortOrder,
+      page:      query.page,
+      limit:     query.limit,
     });
-    return { items, total };
+    return result as { items: ProposalEntity[]; total: number };
   }
 
   // ── Get by ID ─────────────────────────────────────────────────────────────
 
   async getById(id: string): Promise<ProposalEntity> {
-    const proposal = await this.repo.findOne({
-      where: { id },
-      relations: ['sections', 'exportedFiles'],
-    });
-    if (!proposal) throw new AppError(404, `Proposal ${id} not found`, 'NOT_FOUND');
-    return proposal;
+    return dal.getProposalById(id) as Promise<ProposalEntity>;
   }
 
   // ── Create ────────────────────────────────────────────────────────────────
 
   async create(dto: CreateProposalDto): Promise<ProposalEntity> {
     // Enforce unique proposal code
-    const existing = await this.repo.findOne({ where: { proposalCode: dto.proposalCode } });
+    const existing = await dal.findProposalByCode(dto.proposalCode);
     if (existing) {
       throw new AppError(409, `Proposal code '${dto.proposalCode}' already exists`, 'DUPLICATE_CODE');
     }
 
     // Validate source proposal exists when cloning
     if (dto.method === ProposalMethod.CLONE && dto.sourceProposalId) {
-      const sourceExists = await this.repo.findOne({
-        where: { id: dto.sourceProposalId },
-        select: ['id'],
-      });
-      if (!sourceExists) {
+      await dal.getProposalById(dto.sourceProposalId).catch(() => {
         throw new AppError(404, `Source proposal '${dto.sourceProposalId}' not found`, 'NOT_FOUND');
-      }
+      });
     }
 
-    const proposal = this.repo.create({
-      id:                        uuid(),
-      name:                      dto.name,
-      client:                    dto.client,
-      bdManager:                 dto.bdManager,
-      proposalManager:           dto.proposalManager,
-      proposalCode:              dto.proposalCode,
-      status:                    ProposalStatus.DRAFT,
-      method:                    dto.method,
-      businessUnit:              dto.businessUnit,
-      templateType:              dto.templateType,
-      description:               dto.description,
-      sfdcOpportunityCode:       dto.sfdcOpportunityCode,
-      currentStage:              ProposalStage.DRAFT_CREATION,
-      completionPercentage:      0,
-      pmReviewComplete:          false,
-      managementReviewComplete:  false,
-      isAmendment:               false,
-      createdBy:                 dto.createdBy,
-      updatedBy:                 dto.createdBy,
-    });
-    proposal.assignedStakeholders = dto.assignedStakeholders;
-    await this.repo.save(proposal);
+    const proposal = await dal.createProposal({
+      id:                       uuid(),
+      name:                     dto.name,
+      client:                   dto.client,
+      bdManager:                dto.bdManager,
+      proposalManager:          dto.proposalManager,
+      proposalCode:             dto.proposalCode,
+      status:                   ProposalStatus.DRAFT,
+      method:                   dto.method,
+      businessUnit:             dto.businessUnit,
+      templateType:             dto.templateType,
+      description:              dto.description,
+      sfdcOpportunityCode:      dto.sfdcOpportunityCode,
+      currentStage:             ProposalStage.DRAFT_CREATION,
+      completionPercentage:     0,
+      pmReviewComplete:         false,
+      managementReviewComplete: false,
+      isAmendment:              false,
+      createdBy:                dto.createdBy,
+      updatedBy:                dto.createdBy,
+      assignedStakeholders:     dto.assignedStakeholders,
+    }) as ProposalEntity;
 
     // Build section content map from template or source clone
     const sectionContent: Record<string, object> = {};
 
     if (dto.method === ProposalMethod.TEMPLATE && dto.templateId) {
-      const template = await this.templateRepo.findOne({ where: { id: dto.templateId } });
+      const template = await dal.getTemplateById(dto.templateId);
       if (template) {
         (template.sections as Array<{ sectionKey: string; defaultContent: object }>).forEach((ts) => {
           sectionContent[ts.sectionKey] = ts.defaultContent;
@@ -133,43 +101,31 @@ export class ProposalService {
     }
 
     if ((dto.method === ProposalMethod.CLONE || dto.method === ProposalMethod.AMENDMENT) && dto.sourceProposalId) {
-      const sourceSections = await this.sectionRepo.find({
-        where: { proposalId: dto.sourceProposalId },
-      });
+      const sourceSections = await dal.getSections(dto.sourceProposalId);
       sourceSections.forEach((ss) => {
-        sectionContent[ss.sectionKey] = ss.content;
+        sectionContent[ss.sectionKey] = ss.content as object;
       });
     }
 
-    // Build sections array (include amendment-specific section when needed)
+    // Build sections (include amendment-specific section when needed)
     const sectionsToCreate = [...DEFAULT_SECTIONS];
     if (dto.method === ProposalMethod.AMENDMENT) {
-      sectionsToCreate.push({
-        sectionKey: SectionKey.AMENDMENT_DETAILS,
-        title:      'Amendment Details',
-        sortOrder:  5,
-      });
+      sectionsToCreate.push({ sectionKey: SectionKey.AMENDMENT_DETAILS, title: 'Amendment Details', sortOrder: 5 });
     }
 
-    // Batch insert all sections in a single save call (avoids N+1)
-    const sectionEntities = sectionsToCreate.map((s) => {
-      const section = this.sectionRepo.create({
-        id:          uuid(),
-        proposalId:  proposal.id,
-        sectionKey:  s.sectionKey,
-        title:       s.title,
-        sortOrder:   s.sortOrder,
-        isComplete:  false,
-        isLocked:    false,
-        createdBy:   dto.createdBy,
-        updatedBy:   dto.createdBy,
-      });
-      section.content = sectionContent[s.sectionKey] ?? {};
-      return section;
-    });
-    await this.sectionRepo.save(sectionEntities);
+    await dal.createSections(sectionsToCreate.map((s) => ({
+      id:         uuid(),
+      proposalId: proposal.id,
+      sectionKey: s.sectionKey,
+      title:      s.title,
+      sortOrder:  s.sortOrder,
+      isComplete: false,
+      isLocked:   false,
+      createdBy:  dto.createdBy,
+      updatedBy:  dto.createdBy,
+      content:    sectionContent[s.sectionKey] ?? {},
+    })));
 
-    // Fire-and-forget audit log (non-blocking)
     auditService.log({
       proposalId: proposal.id,
       userEmail:  dto.createdBy,
@@ -177,7 +133,9 @@ export class ProposalService {
       action:     AuditAction.CREATED,
       details:    `Proposal "${proposal.name}" created via ${dto.method} method`,
       snapshot:   { id: proposal.id, name: proposal.name, client: proposal.client },
-    }).catch(() => { /* audit failures must not break the create flow */ });
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
+
+    syncProposalToQdrant(proposal.id).catch((err) => logger.warn({ err }, '[VectorSync] Post-create sync failed'));
 
     return this.getById(proposal.id);
   }
@@ -186,20 +144,20 @@ export class ProposalService {
 
   async update(id: string, dto: UpdateProposalDto): Promise<ProposalEntity> {
     const proposal = await this.getById(id);
-    const oldData = { ...proposal } as Record<string, unknown>;
+    const oldData  = { ...proposal } as Record<string, unknown>;
 
-    if (dto.name            !== undefined) proposal.name                = dto.name;
-    if (dto.client          !== undefined) proposal.client              = dto.client;
-    if (dto.bdManager       !== undefined) proposal.bdManager           = dto.bdManager;
-    if (dto.proposalManager !== undefined) proposal.proposalManager     = dto.proposalManager;
-    if (dto.description     !== undefined) proposal.description         = dto.description;
-    if (dto.sfdcOpportunityCode !== undefined) proposal.sfdcOpportunityCode = dto.sfdcOpportunityCode;
-    if (dto.assignedStakeholders !== undefined) proposal.assignedStakeholders = dto.assignedStakeholders;
-    proposal.updatedBy = dto.updatedBy;
+    const updates: Partial<ProposalEntity> = { updatedBy: dto.updatedBy };
+    if (dto.name                 !== undefined) updates.name                 = dto.name;
+    if (dto.client               !== undefined) updates.client               = dto.client;
+    if (dto.bdManager            !== undefined) updates.bdManager            = dto.bdManager;
+    if (dto.proposalManager      !== undefined) updates.proposalManager      = dto.proposalManager;
+    if (dto.description          !== undefined) updates.description          = dto.description;
+    if (dto.sfdcOpportunityCode  !== undefined) updates.sfdcOpportunityCode  = dto.sfdcOpportunityCode;
+    if (dto.assignedStakeholders !== undefined) updates.assignedStakeholders = dto.assignedStakeholders;
 
-    await this.repo.save(proposal);
+    const updated = await dal.updateProposal(id, updates) as ProposalEntity;
 
-    const changes = detectChanges(oldData, proposal as unknown as Record<string, unknown>);
+    const changes = detectChanges(oldData, updated as unknown as Record<string, unknown>);
     auditService.log({
       proposalId: id,
       userEmail:  dto.updatedBy,
@@ -207,43 +165,37 @@ export class ProposalService {
       action:     AuditAction.UPDATED,
       details:    `Proposal updated: ${changes.join('; ')}`,
       changes:    { changes },
-    }).catch(() => {});
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
 
-    return this.getById(id);
+    return updated;
   }
 
   // ── Advance Stage ─────────────────────────────────────────────────────────
 
   async advanceStage(id: string, dto: AdvanceStageDto): Promise<ProposalEntity> {
     const proposal = await this.getById(id);
-    const sections = await this.sectionRepo.find({ where: { proposalId: id } });
+    const sections = await dal.getSections(id) as ProposalSectionEntity[];
 
     if (dto.reviewType === 'pm') {
-      proposal.pmReviewComplete = true;
-      proposal.updatedBy = dto.updatedBy;
-      await this.repo.save(proposal);
+      await dal.updateProposal(id, { pmReviewComplete: true, updatedBy: dto.updatedBy });
       auditService.log({
         proposalId: id, userEmail: dto.updatedBy, userName: dto.updatedBy,
         action: AuditAction.PM_REVIEW_COMPLETE, details: 'PM Review marked as complete',
-      }).catch(() => {});
-      if (proposal.managementReviewComplete) {
-        return this.advanceToStage5(proposal, sections, dto.updatedBy);
-      }
-      return this.getById(id);
+      }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
+      const refreshed = await this.getById(id);
+      if (refreshed.managementReviewComplete) return this.advanceToStage5(refreshed, sections, dto.updatedBy);
+      return refreshed;
     }
 
     if (dto.reviewType === 'management') {
-      proposal.managementReviewComplete = true;
-      proposal.updatedBy = dto.updatedBy;
-      await this.repo.save(proposal);
+      await dal.updateProposal(id, { managementReviewComplete: true, updatedBy: dto.updatedBy });
       auditService.log({
         proposalId: id, userEmail: dto.updatedBy, userName: dto.updatedBy,
         action: AuditAction.MANAGEMENT_REVIEW_COMPLETE, details: 'Management Review marked as complete',
-      }).catch(() => {});
-      if (proposal.pmReviewComplete) {
-        return this.advanceToStage5(proposal, sections, dto.updatedBy);
-      }
-      return this.getById(id);
+      }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
+      const refreshed = await this.getById(id);
+      if (refreshed.pmReviewComplete) return this.advanceToStage5(refreshed, sections, dto.updatedBy);
+      return refreshed;
     }
 
     const validation = validateStageAdvancement({
@@ -253,23 +205,25 @@ export class ProposalService {
       throw new AppError(400, validation.reason ?? 'Stage advancement not allowed', 'STAGE_ERROR');
     }
 
-    const prevStage = proposal.currentStage;
-    proposal.currentStage = dto.targetStage;
-    proposal.status =
-      dto.targetStage === ProposalStage.CLIENT_SUBMISSION
-        ? ProposalStatus.SENT
-        : ProposalStatus.REVIEW;
-    proposal.completionPercentage = computeCompletionPercentage(
+    const prevStage            = proposal.currentStage;
+    const newStatus            = dto.targetStage === ProposalStage.CLIENT_SUBMISSION
+      ? ProposalStatus.SENT : ProposalStatus.REVIEW;
+    const completionPercentage = computeCompletionPercentage(
       sections, dto.targetStage as ProposalStage, proposal.pmReviewComplete, proposal.managementReviewComplete,
     );
-    proposal.updatedBy = dto.updatedBy;
 
-    await this.repo.save(proposal);
+    await dal.updateProposal(id, {
+      currentStage: dto.targetStage,
+      status:       newStatus,
+      completionPercentage,
+      updatedBy:    dto.updatedBy,
+    });
+
     auditService.log({
       proposalId: id, userEmail: dto.updatedBy, userName: dto.updatedBy,
       action: AuditAction.STAGE_ADVANCED,
       details: `Stage advanced: ${getStageName(prevStage as ProposalStage)} → ${getStageName(dto.targetStage as ProposalStage)}`,
-    }).catch(() => {});
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
 
     return this.getById(id);
   }
@@ -279,20 +233,20 @@ export class ProposalService {
     sections: ProposalSectionEntity[],
     updatedBy: string,
   ): Promise<ProposalEntity> {
-    proposal.currentStage = ProposalStage.CLIENT_SUBMISSION;
-    proposal.status = ProposalStatus.SENT;
-    proposal.completionPercentage = computeCompletionPercentage(
+    const completionPercentage = computeCompletionPercentage(
       sections, ProposalStage.CLIENT_SUBMISSION, true, true,
     );
-    proposal.updatedBy = updatedBy;
-    await this.repo.save(proposal);
-
+    await dal.updateProposal(proposal.id, {
+      currentStage: ProposalStage.CLIENT_SUBMISSION,
+      status:       ProposalStatus.SENT,
+      completionPercentage,
+      updatedBy,
+    });
     auditService.log({
       proposalId: proposal.id, userEmail: updatedBy, userName: updatedBy,
       action: AuditAction.STAGE_ADVANCED,
       details: 'Both PM and Management reviews complete — proposal advanced to Client Submission',
-    }).catch(() => {});
-
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
     return this.getById(proposal.id);
   }
 
@@ -309,69 +263,46 @@ export class ProposalService {
       );
     }
 
-    // Use a transaction to prevent revision-number race conditions under concurrent requests
-    const amendment = await AppDataSource.transaction(async (manager) => {
-      const txRepo = manager.getRepository(ProposalEntity);
+    // Atomically lock source row and get the next revision number from the DAL
+    const { revisionNumber } = await dal.reserveRevision(sourceId);
 
-      // Lock the source row so concurrent amendment requests queue up
-      await txRepo
-        .createQueryBuilder('p')
-        .setLock('pessimistic_write')
-        .where('p.id = :id', { id: sourceId })
-        .getOne();
+    const createDto: CreateProposalDto = {
+      name:                 dto.name,
+      client:               dto.client,
+      bdManager:            dto.bdManager,
+      proposalManager:      dto.proposalManager ?? source.proposalManager,
+      proposalCode:         dto.proposalCode,
+      method:               ProposalMethod.AMENDMENT,
+      sourceProposalId:     sourceId,
+      businessUnit:         source.businessUnit,
+      templateType:         source.templateType,
+      description:          dto.description ?? source.description,
+      sfdcOpportunityCode:  dto.sfdcOpportunityCode ?? source.sfdcOpportunityCode,
+      assignedStakeholders: dto.assignedStakeholders,
+      createdBy:            dto.createdBy,
+    };
 
-      const existingCount = await txRepo.count({
-        where: { parentProposalId: sourceId, isAmendment: true },
-      });
-      const revisionNumber = existingCount + 1;
+    const newAmendment = await this.create(createDto);
 
-      const createDto: CreateProposalDto = {
-        name:                dto.name,
-        client:              dto.client,
-        bdManager:           dto.bdManager,
-        proposalManager:     dto.proposalManager ?? source.proposalManager,
-        proposalCode:        dto.proposalCode,
-        method:              ProposalMethod.AMENDMENT,
-        sourceProposalId:    sourceId,
-        businessUnit:        source.businessUnit,
-        templateType:        source.templateType,
-        description:         dto.description ?? source.description,
-        sfdcOpportunityCode: dto.sfdcOpportunityCode ?? source.sfdcOpportunityCode,
-        assignedStakeholders: dto.assignedStakeholders,
-        createdBy:           dto.createdBy,
-      };
-
-      // create() uses the default repos; we call it outside the tx manager
-      // but the revision-number lock above is sufficient for this pattern
-      const newAmendment = await this.create(createDto);
-
-      // Set amendment tracking fields
-      await txRepo.update(newAmendment.id, {
-        isAmendment:        true,
-        parentProposalId:   sourceId,
-        parentProposalCode: source.proposalCode,
-        revisionNumber,
-        amendmentDate:      new Date().toISOString().split('T')[0],
-      });
-
-      return newAmendment;
+    // Set amendment tracking fields
+    await dal.updateProposal(newAmendment.id, {
+      isAmendment:        true,
+      parentProposalId:   sourceId,
+      parentProposalCode: source.proposalCode,
+      revisionNumber,
+      amendmentDate:      new Date().toISOString().split('T')[0],
     });
 
-    // Audit on both the source and the new amendment
     auditService.log({
-      proposalId: sourceId,
-      userEmail: dto.createdBy, userName: dto.createdBy,
-      action: AuditAction.AMENDED,
-      details: `Amendment created: ${amendment.proposalCode}`,
-    }).catch(() => {});
+      proposalId: sourceId, userEmail: dto.createdBy, userName: dto.createdBy,
+      action: AuditAction.AMENDED, details: `Amendment created: ${newAmendment.proposalCode}`,
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
     auditService.log({
-      proposalId: amendment.id,
-      userEmail: dto.createdBy, userName: dto.createdBy,
-      action: AuditAction.CREATED,
-      details: `Amendment of ${source.proposalCode}`,
-    }).catch(() => {});
+      proposalId: newAmendment.id, userEmail: dto.createdBy, userName: dto.createdBy,
+      action: AuditAction.CREATED, details: `Amendment of ${source.proposalCode}`,
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
 
-    return this.getById(amendment.id);
+    return this.getById(newAmendment.id);
   }
 
   // ── Reopen ────────────────────────────────────────────────────────────────
@@ -381,68 +312,61 @@ export class ProposalService {
 
     if (dto.mode === 'revise') {
       if (source.currentStage !== ProposalStage.CLIENT_SUBMISSION) {
-        throw new AppError(
-          400,
-          'Revise is only allowed for Stage 5 (Client Submission) proposals',
-          'INVALID_STAGE',
-        );
+        throw new AppError(400, 'Revise is only allowed for Stage 5 (Client Submission) proposals', 'INVALID_STAGE');
       }
 
-      source.currentStage              = ProposalStage.MANAGEMENT_REVIEW;
-      source.status                    = ProposalStatus.REVIEW;
-      source.pmReviewComplete          = false;
-      source.managementReviewComplete  = false;
-      source.updatedBy                 = dto.updatedBy;
-
-      // Recompute completion percentage from actual section state
-      const sections = await this.sectionRepo.find({ where: { proposalId: sourceId } });
-      source.completionPercentage = computeCompletionPercentage(
+      const sections            = await dal.getSections(sourceId) as ProposalSectionEntity[];
+      const completionPercentage = computeCompletionPercentage(
         sections, ProposalStage.MANAGEMENT_REVIEW, false, false,
       );
 
-      // Batch-unlock all sections (single query instead of N saves)
       if (sections.length > 0) {
-        const unlocked = sections.map((s) => ({ ...s, isLocked: false, updatedBy: dto.updatedBy }));
-        await this.sectionRepo.save(unlocked);
+        await dal.batchUpdateSections(
+          sections.map((s) => ({ ...s, isLocked: false, updatedBy: dto.updatedBy })),
+        );
       }
 
-      await this.repo.save(source);
+      await dal.updateProposal(sourceId, {
+        currentStage:             ProposalStage.MANAGEMENT_REVIEW,
+        status:                   ProposalStatus.REVIEW,
+        pmReviewComplete:         false,
+        managementReviewComplete: false,
+        completionPercentage,
+        updatedBy:                dto.updatedBy,
+      });
 
       auditService.log({
-        proposalId: sourceId,
-        userEmail: dto.updatedBy, userName: dto.updatedBy,
+        proposalId: sourceId, userEmail: dto.updatedBy, userName: dto.updatedBy,
         action: AuditAction.REVISED,
         details: 'Proposal revised — moved back to Management Review (Stage 4), all sections unlocked',
-      }).catch(() => {});
+      }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
 
       return this.getById(sourceId);
     }
 
-    // Clone or New — create a fresh proposal
     const createDto: CreateProposalDto = {
-      name:                dto.name ?? source.name,
-      client:              dto.client ?? source.client,
-      bdManager:           dto.bdManager ?? source.bdManager,
-      proposalManager:     source.proposalManager,
-      proposalCode:        dto.proposalCode ?? source.proposalCode,
-      method:              dto.mode === 'clone' ? ProposalMethod.CLONE : ProposalMethod.SCRATCH,
-      sourceProposalId:    dto.mode === 'clone' ? sourceId : undefined,
-      businessUnit:        source.businessUnit,
-      templateType:        source.templateType,
-      description:         dto.description ?? source.description,
-      sfdcOpportunityCode: dto.sfdcOpportunityCode ?? source.sfdcOpportunityCode,
+      name:                 dto.name ?? source.name,
+      client:               dto.client ?? source.client,
+      bdManager:            dto.bdManager ?? source.bdManager,
+      proposalManager:      source.proposalManager,
+      proposalCode:         dto.proposalCode ?? source.proposalCode,
+      method:               dto.mode === 'clone' ? ProposalMethod.CLONE : ProposalMethod.SCRATCH,
+      sourceProposalId:     dto.mode === 'clone' ? sourceId : undefined,
+      businessUnit:         source.businessUnit,
+      templateType:         source.templateType,
+      description:          dto.description ?? source.description,
+      sfdcOpportunityCode:  dto.sfdcOpportunityCode ?? source.sfdcOpportunityCode,
       assignedStakeholders: dto.assignedStakeholders,
-      createdBy:           dto.updatedBy,
+      createdBy:            dto.updatedBy,
     };
 
     const newProposal = await this.create(createDto);
 
     auditService.log({
-      proposalId: newProposal.id,
-      userEmail: dto.updatedBy, userName: dto.updatedBy,
+      proposalId: newProposal.id, userEmail: dto.updatedBy, userName: dto.updatedBy,
       action: AuditAction.REOPENED,
       details: `${dto.mode === 'clone' ? 'Cloned from' : 'New proposal based on'} ${source.proposalCode}`,
-    }).catch(() => {});
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
 
     return this.getById(newProposal.id);
   }
@@ -451,9 +375,7 @@ export class ProposalService {
 
   async softDelete(id: string, deletedBy: string): Promise<void> {
     const proposal = await this.getById(id);
-    proposal.status    = ProposalStatus.CLOSED;
-    proposal.updatedBy = deletedBy;
-    await this.repo.save(proposal);
+    await dal.updateProposal(id, { status: ProposalStatus.CLOSED, updatedBy: deletedBy });
 
     auditService.log({
       proposalId: id,
@@ -462,7 +384,7 @@ export class ProposalService {
       action:     AuditAction.DELETED,
       details:    `Proposal "${proposal.name}" closed/deleted`,
       snapshot:   { id: proposal.id, name: proposal.name },
-    }).catch(() => {});
+    }).catch((err) => logger.warn({ err }, '[Audit] Failed to write audit log'));
   }
 }
 

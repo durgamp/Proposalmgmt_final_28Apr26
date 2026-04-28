@@ -1,13 +1,12 @@
 FROM node:20-alpine AS base
 WORKDIR /app
-RUN npm install -g pnpm
 
 # Install dependencies
 FROM base AS deps
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY package.json package-lock.json* ./
 COPY packages/shared-types/package.json ./packages/shared-types/
 COPY apps/web/package.json ./apps/web/
-RUN pnpm install --frozen-lockfile
+RUN npm ci --ignore-scripts
 
 # Build
 FROM deps AS builder
@@ -21,8 +20,8 @@ ARG VITE_WS_URL=ws://localhost:3001
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WS_URL=$VITE_WS_URL
 
-RUN pnpm --filter @biopropose/shared-types build
-RUN pnpm --filter web build
+RUN npm run build -w @biopropose/shared-types
+RUN npm run build -w web
 
 # Production: nginx to serve the built static files
 FROM nginx:1.27-alpine AS runner

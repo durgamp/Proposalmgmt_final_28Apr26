@@ -6,6 +6,10 @@ import TextAlign from '@tiptap/extension-text-align';
 import Highlight from '@tiptap/extension-highlight';
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCursor from '@tiptap/extension-collaboration-cursor';
+import Table from '@tiptap/extension-table';
+import TableRow from '@tiptap/extension-table-row';
+import TableCell from '@tiptap/extension-table-cell';
+import TableHeader from '@tiptap/extension-table-header';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { useAuthStore } from '../../stores/authStore';
@@ -126,6 +130,10 @@ export default function SectionEditor({ proposalId, section, proposal }: Props) 
       Underline,
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight,
+      Table.configure({ resizable: true }),
+      TableRow,
+      TableCell,
+      TableHeader,
       Collaboration.configure({ document: ydoc }),
       // Pass the real provider — created synchronously above so awareness is fully initialised
       CollaborationCursor.configure({

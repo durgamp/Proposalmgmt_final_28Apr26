@@ -32,6 +32,7 @@ export enum SectionKey {
   CEO_LETTER = 'ceo-letter',
   EXECUTIVE_SUMMARY = 'executive-summary',
   SCOPE_OF_WORK = 'scope-of-work',
+  FLOWCHART = 'flowchart',
   PROJECT_DETAILS = 'project-details',
   TERMS_CONDITIONS = 'terms-conditions',
   AMENDMENT_DETAILS = 'amendment-details',

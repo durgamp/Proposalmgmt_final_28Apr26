@@ -6,9 +6,12 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
 
-  // Database
-  DB_TYPE: z.enum(['sqlite', 'postgres', 'mysql', 'mssql']).default('sqlite'),
-  SQLITE_DB_PATH: z.string().default('./biopropose.sqlite'),
+  // DAL — Data Access Layer connection
+  DAL_URL:     z.string().default('http://dal:5000'),
+  DAL_API_KEY: z.string().min(8, 'DAL_API_KEY must be at least 8 characters'),
+
+  // Database (MySQL via Docker — sqlite removed)
+  DB_TYPE: z.enum(['mysql', 'postgres', 'mssql']).default('mysql'),
   DB_HOST: z.string().optional(),
   DB_PORT: z.coerce.number().optional(),
   DB_USER: z.string().optional(),
@@ -25,9 +28,11 @@ const envSchema = z.object({
   OLLAMA_BASE_URL:    z.string().default('http://localhost:11434'),
   OLLAMA_MODEL:       z.string().default('qwen3.5:4b'),
   OLLAMA_TIMEOUT:     z.coerce.number().default(120000),
-  // Optional: dedicated embedding model (e.g. nomic-embed-text, mxbai-embed-large).
-  // If not set, falls back to OLLAMA_MODEL which also supports /api/embeddings.
-  OLLAMA_EMBED_MODEL: z.string().optional(),
+  // Dedicated embedding model — nomic-embed-text produces 768-dim vectors (recommended)
+  OLLAMA_EMBED_MODEL: z.string().default('nomic-embed-text'),
+
+  // Qdrant vector database
+  QDRANT_URL: z.string().default('http://localhost:32768'),
 
   // Claude / Anthropic API (used when AI_PROVIDER=claude)
   ANTHROPIC_API_KEY: z.string().optional(),
@@ -62,6 +67,15 @@ const envSchema = z.object({
 
   // Error tracking (optional — disabled when not set)
   SENTRY_DSN: z.string().url().optional(),
+
+  // Salesforce (SFDC) integration — all optional; feature disabled when CLIENT_ID is absent
+  SFDC_LOGIN_URL:        z.string().url().default('https://login.salesforce.com'),
+  SFDC_CLIENT_ID:        z.string().optional(),
+  SFDC_CLIENT_SECRET:    z.string().optional(),
+  SFDC_USERNAME:         z.string().optional(),
+  SFDC_PASSWORD:         z.string().optional(),
+  SFDC_API_VERSION:      z.string().default('v59.0'),
+  SFDC_OPP_SEARCH_FIELD: z.string().default('Name'),
 });
 
 const parsed = envSchema.safeParse(process.env);

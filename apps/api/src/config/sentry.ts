@@ -27,6 +27,7 @@ export async function initSentry(): Promise<void> {
   }
 
   try {
+    // @ts-ignore — @sentry/node is optional; install via: pnpm --filter api add @sentry/node
     Sentry = await import('@sentry/node');
     Sentry.init({
       dsn: env.SENTRY_DSN,

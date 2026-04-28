@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { exportService } from '../services/export.service';
+import { logger } from '../config/logger';
 import type { ExportDto } from '../validators/cost.validators';
 
 export const exportController = {
@@ -20,8 +21,7 @@ export const exportController = {
       );
       res.download(filePath, fileName, (err) => {
         if (err) next(err);
-        // Clean up file after download
-        fs.unlink(filePath, () => { /* ignore */ });
+        fs.promises.unlink(filePath).catch((e) => logger.warn({ err: e, filePath }, '[Export] Failed to delete export file'));
       });
     } catch (err) { next(err); }
   },
@@ -34,7 +34,7 @@ export const exportController = {
       );
       res.download(filePath, fileName, (err) => {
         if (err) next(err);
-        fs.unlink(filePath, () => { /* ignore */ });
+        fs.promises.unlink(filePath).catch((e) => logger.warn({ err: e, filePath }, '[Export] Failed to delete export file'));
       });
     } catch (err) { next(err); }
   },

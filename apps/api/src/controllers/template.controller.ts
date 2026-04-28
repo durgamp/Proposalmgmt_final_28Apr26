@@ -1,10 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
+import { randomBytes } from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { AppDataSource } from '@biopropose/database';
-import { TemplateEntity } from '@biopropose/database';
+import { dal } from '../clients/dal.client';
 import { AppError } from '../middleware/errorHandler';
+import { logger } from '../config/logger';
 import { parseTemplateFile } from '../services/templateUpload.service';
 
 // ── Multer config ────────────────────────────────────────────────────────────
@@ -15,7 +16,7 @@ const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    cb(null, `${Date.now()}-${randomBytes(8).toString('hex')}${ext}`);
   },
 });
 
@@ -39,16 +40,14 @@ export const upload = multer({
 export const templateController = {
   list: async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      const repo = AppDataSource.getRepository(TemplateEntity);
-      const templates = await repo.find({ order: { name: 'ASC' } });
+      const templates = await dal.listTemplates();
       res.json(templates);
     } catch (err) { next(err); }
   },
 
   getById: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const repo = AppDataSource.getRepository(TemplateEntity);
-      const template = await repo.findOne({ where: { id: req.params.id } });
+      const template = await dal.getTemplateById(req.params.id);
       if (!template) throw new AppError(404, 'Template not found', 'NOT_FOUND');
       res.json(template);
     } catch (err) { next(err); }
@@ -56,47 +55,42 @@ export const templateController = {
 
   create: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const repo = AppDataSource.getRepository(TemplateEntity);
       const { name, businessUnit, category, description, sections, createdBy } = req.body;
-      const t = repo.create({
+      const saved = await dal.createTemplate({
         name,
         businessUnit,
         category: category ?? businessUnit,
         description,
-        sectionsJson: JSON.stringify(sections ?? []),
+        sections: sections ?? [],
         isSystem: false,
         createdBy,
       });
-      const saved = await repo.save(t);
       res.status(201).json(saved);
     } catch (err) { next(err); }
   },
 
   update: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const repo = AppDataSource.getRepository(TemplateEntity);
-      const template = await repo.findOne({ where: { id: req.params.id } });
+      const template = await dal.getTemplateById(req.params.id);
       if (!template) throw new AppError(404, 'Template not found', 'NOT_FOUND');
-
       const { name, businessUnit, category, description, sections } = req.body;
-      if (name !== undefined) template.name = name;
-      if (businessUnit !== undefined) template.businessUnit = businessUnit;
-      if (category !== undefined) template.category = category;
-      if (description !== undefined) template.description = description;
-      if (sections !== undefined) template.sectionsJson = JSON.stringify(sections);
-
-      const saved = await repo.save(template);
+      const patch: Record<string, unknown> = {};
+      if (name !== undefined)         patch.name         = name;
+      if (businessUnit !== undefined) patch.businessUnit = businessUnit;
+      if (category !== undefined)     patch.category     = category;
+      if (description !== undefined)  patch.description  = description;
+      if (sections !== undefined)     patch.sections     = sections;
+      const saved = await dal.updateTemplate(req.params.id, patch);
       res.json(saved);
     } catch (err) { next(err); }
   },
 
   delete: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const repo = AppDataSource.getRepository(TemplateEntity);
-      const template = await repo.findOne({ where: { id: req.params.id } });
+      const template = await dal.getTemplateById(req.params.id);
       if (!template) throw new AppError(404, 'Template not found', 'NOT_FOUND');
       if (template.isSystem) throw new AppError(403, 'System templates cannot be deleted', 'FORBIDDEN');
-      await repo.remove(template);
+      await dal.deleteTemplate(req.params.id);
       res.status(204).send();
     } catch (err) { next(err); }
   },
@@ -112,8 +106,8 @@ export const templateController = {
 
       const sections = await parseTemplateFile(req.file.path, req.file.mimetype);
 
-      // Clean up temp file
-      fs.unlink(req.file.path, () => {});
+      // Clean up temp file (best-effort — don't block the response)
+      fs.promises.unlink(req.file.path).catch((e) => logger.warn({ err: e }, '[Template] Failed to delete temp file'));
 
       res.json({
         originalName: req.file.originalname,

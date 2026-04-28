@@ -149,8 +149,27 @@ export const exportApi = {
 
 // ---- AI ----
 
+export interface SemanticSearchResult {
+  proposalId:   string;
+  proposalName: string;
+  proposalCode: string;
+  sectionKey:   string;
+  client:       string;
+  businessUnit: string;
+  status:       string;
+  plainText:    string;
+  score:        number;
+  updatedAt:    string;
+}
+
 export const aiApi = {
   health: () => api.get('/ai/health').then((r) => r.data),
+
+  search: (dto: { query: string; sectionKey?: string; limit?: number; excludeProposalId?: string }) =>
+    api.post<{ results: SemanticSearchResult[]; total: number }>('/ai/search', dto).then((r) => r.data),
+
+  syncStatus: () => api.get('/ai/sync/status').then((r) => r.data),
+  triggerSync: () => api.post('/ai/sync').then((r) => r.data),
 
   draft: (dto: unknown) =>
     api.post<{ content: string; model: string }>('/ai/draft', dto).then((r) => r.data),
@@ -271,6 +290,29 @@ export const templatesApi = {
       sectionCount: number;
     }>('/templates/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data);
   },
+};
+
+// ---- Salesforce (SFDC) ----
+
+export interface SfdcOpportunity {
+  id:          string;
+  name:        string;
+  description: string | null;
+  accountName: string | null;
+  amount:      number | null;
+  closeDate:   string | null;
+  stageName:   string | null;
+}
+
+export const sfdcApi = {
+  /**
+   * Fetches Opportunity context from Salesforce by the SFDC Opportunity Code.
+   * Throws on network/server error; returns null when the opportunity is not found.
+   * Returns undefined-like rejection with code SFDC_NOT_CONFIGURED when the server
+   * has no SFDC credentials set up.
+   */
+  getOpportunity: (code: string) =>
+    api.get<SfdcOpportunity>(`/sfdc/opportunity/${encodeURIComponent(code.trim())}`).then((r) => r.data),
 };
 
 export default api;

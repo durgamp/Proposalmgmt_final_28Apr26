@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Check, FileText, Copy, Sparkles, Layout, PenLine, Upload } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, FileText, Copy, Sparkles, Layout, PenLine, Upload, Loader2, X, Building2 } from 'lucide-react';
 import { useCreateProposal } from '../hooks/useProposals';
 import { useAuthStore } from '../stores/authStore';
-import { ProposalMethod } from '@biopropose/shared-types';
+import { ProposalMethod, UserRole } from '@biopropose/shared-types';
 import { useQuery } from '@tanstack/react-query';
-import { templatesApi, proposalsApi } from '../services/api';
+import { templatesApi, proposalsApi, sfdcApi } from '../services/api';
+import type { SfdcOpportunity } from '../services/api';
 import { GrammarCheckTextarea } from '../components/editor/GrammarCheckTextarea';
 import clsx from 'clsx';
 
@@ -61,7 +62,7 @@ export default function NewProposalPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const user = useAuthStore((s) => s.user);
-  const isProposalManager = user?.role === 'proposal_manager' || user?.role === 'admin';
+  const isProposalManager = user?.role === UserRole.PROPOSAL_MANAGER || user?.role === UserRole.MANAGEMENT;
   const createProposal = useCreateProposal();
   const { data: templates } = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list });
   const { data: proposalsResult } = useQuery({
@@ -72,6 +73,9 @@ export default function NewProposalPage() {
 
   const [step, setStep] = useState(0);
   const [stakeholderInput, setStakeholderInput] = useState('');
+  const [sfdcLoading, setSfdcLoading] = useState(false);
+  const [sfdcContext, setSfdcContext] = useState<SfdcOpportunity | null>(null);
+  const [sfdcFetchWarning, setSfdcFetchWarning] = useState<string | null>(null);
 
   // Pre-fill from URL params (e.g. when coming from Template Library or Proposals list Clone button)
   const urlTemplateId = searchParams.get('templateId') ?? '';
@@ -110,6 +114,33 @@ export default function NewProposalPage() {
 
   const removeStakeholder = (email: string) => {
     setForm((f) => ({ ...f, assignedStakeholders: f.assignedStakeholders.filter((s) => s !== email) }));
+  };
+
+  const handleNext = async () => {
+    if (step === 0 && form.sfdcOpportunityCode.trim()) {
+      setSfdcLoading(true);
+      setSfdcFetchWarning(null);
+      setSfdcContext(null);
+      try {
+        const opp = await sfdcApi.getOpportunity(form.sfdcOpportunityCode.trim());
+        setSfdcContext(opp);
+        if (opp.description && !form.description.trim()) {
+          set('description', opp.description);
+        }
+      } catch (err: unknown) {
+        const status = (err as { response?: { status?: number } }).response?.status;
+        if (status === 503) {
+          setSfdcFetchWarning('Salesforce integration is not configured on this server. Proceeding without opportunity context.');
+        } else if (status === 404) {
+          setSfdcFetchWarning(`Opportunity "${form.sfdcOpportunityCode}" was not found in Salesforce.`);
+        } else {
+          setSfdcFetchWarning('Could not reach Salesforce. Proceeding without opportunity context.');
+        }
+      } finally {
+        setSfdcLoading(false);
+      }
+    }
+    setStep((s) => s + 1);
   };
 
   const canAdvance = () => {
@@ -463,6 +494,48 @@ export default function NewProposalPage() {
         {step === 2 && (
           <>
             <h2 className="text-lg font-semibold text-gray-800">Description & Stakeholders</h2>
+
+            {/* SFDC warning (lookup failed) */}
+            {sfdcFetchWarning && (
+              <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+                <span className="text-amber-600 mt-0.5 flex-shrink-0">⚠</span>
+                <p className="text-amber-800 flex-1">{sfdcFetchWarning}</p>
+                <button type="button" onClick={() => setSfdcFetchWarning(null)} className="text-amber-400 hover:text-amber-700 flex-shrink-0">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {/* SFDC opportunity context card */}
+            {sfdcContext && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm space-y-2">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Building2 size={14} className="text-blue-600" />
+                    <span className="font-semibold text-blue-800 text-xs uppercase tracking-wide">Salesforce Opportunity</span>
+                  </div>
+                  <button type="button" onClick={() => setSfdcContext(null)} className="text-blue-400 hover:text-blue-700">
+                    <X size={14} />
+                  </button>
+                </div>
+                {[
+                  { label: 'Opportunity', value: sfdcContext.name },
+                  { label: 'Account', value: sfdcContext.accountName ?? '—' },
+                  { label: 'Stage', value: sfdcContext.stageName ?? '—' },
+                  { label: 'Amount', value: sfdcContext.amount != null ? `$${sfdcContext.amount.toLocaleString()}` : '—' },
+                  { label: 'Close Date', value: sfdcContext.closeDate ?? '—' },
+                ].map(({ label, value }) => (
+                  <div key={label} className="flex gap-2">
+                    <span className="text-blue-500 w-24 flex-shrink-0">{label}</span>
+                    <span className="text-blue-900 font-medium">{value}</span>
+                  </div>
+                ))}
+                {sfdcContext.description && (
+                  <p className="text-xs text-blue-600 mt-1">Description pre-filled from Salesforce opportunity.</p>
+                )}
+              </div>
+            )}
+
             <div>
               <label className="label">Project Description</label>
               <GrammarCheckTextarea
@@ -548,11 +621,20 @@ export default function NewProposalPage() {
             <button
               type="button"
               className="btn-primary"
-              disabled={!canAdvance()}
-              onClick={() => setStep((s) => s + 1)}
+              disabled={!canAdvance() || sfdcLoading}
+              onClick={handleNext}
             >
-              Next
-              <ArrowRight size={15} />
+              {sfdcLoading ? (
+                <>
+                  <Loader2 size={15} className="animate-spin" />
+                  Fetching SFDC...
+                </>
+              ) : (
+                <>
+                  Next
+                  <ArrowRight size={15} />
+                </>
+              )}
             </button>
           ) : (
             <button

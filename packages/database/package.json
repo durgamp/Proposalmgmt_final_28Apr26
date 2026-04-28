@@ -21,20 +21,15 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@types/uuid": "^10.0.0",
-    "better-sqlite3": "^12.2.0",
     "dotenv": "^16.4.5",
-    "mssql": "^11.0.1",
     "mysql2": "^3.10.0",
-    "pg": "^8.12.0",
     "reflect-metadata": "^0.2.2",
     "typeorm": "^0.3.20",
     "uuid": "^10.0.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.14.0",
-    "@types/pg": "^8.11.6",
+    "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.4.5"

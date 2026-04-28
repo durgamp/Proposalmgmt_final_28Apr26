@@ -41,4 +41,19 @@ export class TemplateEntity {
 
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt!: Date;
+
+  toJSON() {
+    return {
+      id:           this.id,
+      name:         this.name,
+      businessUnit: this.businessUnit,
+      category:     this.category,
+      description:  this.description,
+      sections:     this.sections,
+      isSystem:     this.isSystem,
+      createdBy:    this.createdBy,
+      createdAt:    this.createdAt,
+      updatedAt:    this.updatedAt,
+    };
+  }
 }

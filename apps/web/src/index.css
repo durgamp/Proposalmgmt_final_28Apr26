@@ -73,6 +73,33 @@
   @apply list-decimal ml-5 mb-3;
 }
 
+/* Tiptap table styles */
+.tiptap-editor .ProseMirror table {
+  @apply border-collapse w-full my-4 text-sm;
+}
+
+.tiptap-editor .ProseMirror table td,
+.tiptap-editor .ProseMirror table th {
+  @apply border border-gray-300 px-3 py-2 min-w-[100px] align-top relative;
+}
+
+.tiptap-editor .ProseMirror table th {
+  @apply bg-gray-100 font-semibold text-gray-700;
+}
+
+.tiptap-editor .ProseMirror table .selectedCell::after {
+  content: '';
+  @apply absolute inset-0 bg-blue-100 opacity-50 pointer-events-none;
+}
+
+.tiptap-editor .ProseMirror table .column-resize-handle {
+  @apply absolute right-0 top-0 bottom-0 w-1 bg-blue-400 pointer-events-none;
+}
+
+.tiptap-editor .ProseMirror .tableWrapper {
+  @apply overflow-x-auto;
+}
+
 /* Collaboration cursor */
 .collaboration-cursor__caret {
   border-left: 1px solid #0d0d0d;

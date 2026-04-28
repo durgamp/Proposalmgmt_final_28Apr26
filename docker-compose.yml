@@ -1,116 +1,219 @@
 version: '3.9'
 
 # ============================================================
-# BioPropose — Full Stack Docker Compose
+# BioPropose — Distributed 3-Tier Architecture
 #
-# External services (already running on your machine):
-#   MySQL   → container MYSQL   on host port 3306
-#   Ollama  → container ollama  on host port 11434
+# Security & network isolation:
+#   db-net   → mysql + dal only  (DB never reachable from outside)
+#   app-net  → dal  + api only   (DAL never reachable from the internet)
+#   pub-net  → api  + web only   (only web is public-facing)
 #
-# Services started by this file:
-#   migrate → Runs TypeORM migrations once, then exits
-#   api     → Express API (port 4000) + Yjs WebSocket (port 4001)
-#   web     → React frontend via nginx (port 80)
+# Services:
+#   mysql   → MySQL 8.0            (db-net only,  NO external port in prod)
+#   migrate → Runs TypeORM migrations once then exits
+#   dal     → Data Access Layer    (db-net + app-net, port 5000 internal)
+#   api     → Business Logic (BAL) (app-net + pub-net, port 4000 exposed)
+#   web     → React frontend       (pub-net, port 80 exposed)
 #
-# Usage:
-#   docker compose up -d               # Start with Ollama AI (default)
-#   docker compose logs -f api         # Watch API logs
-#   docker compose down                # Stop all
-#
-# LLM switching (no rebuild needed):
-#   Ollama  → AI_PROVIDER=ollama  (default, uses your running Ollama)
+# AI switching (no rebuild needed):
+#   Ollama  → AI_PROVIDER=ollama  (default)
 #   Claude  → AI_PROVIDER=claude + ANTHROPIC_API_KEY=sk-ant-...
-#             docker compose up -d --no-deps api
 # ============================================================
 
 services:
 
   # ----------------------------------------------------------
-  # Database Migrations (runs once on start, then exits)
+  # MySQL 8.0 Database — isolated in db-net only
+  # No external port: only the DAL can reach it
+  # ----------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: biopropose-mysql
+    # Port 3307 exposed ONLY for local dev tools (remove in production)
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-}
+      MYSQL_DATABASE: biopropose
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m
+    networks:
+      - db-net
+
+  # ----------------------------------------------------------
+  # Database Migrations — runs once, then exits
+  # Reuses the API image (which contains apps/api/dist/migrate.js)
+  # Runs on db-net so it can reach MySQL directly
   # ----------------------------------------------------------
   migrate:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      network: host
     container_name: biopropose-migrate
     command: ["node", "apps/api/dist/migrate.js"]
     environment:
       NODE_ENV: production
       DB_TYPE: mysql
-      DB_HOST: host.docker.internal   # reaches the MYSQL container via host port 3306
+      DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      # WARNING: Set a strong password via DB_PASSWORD env var or a .env file.
-      # Never deploy with an empty password in production.
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: biopropose
       DB_SSL: "false"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: "no"
+    networks:
+      - db-net
 
   # ----------------------------------------------------------
-  # API Server (Express + Yjs WebSocket)
-  # Port 4000 used (3000 is already taken by openwebui)
+  # Data Access Layer (DAL) — owns all DB interactions
+  # Reachable only on db-net (to reach MySQL) and app-net (from BAL)
+  # Never exposed publicly
   # ----------------------------------------------------------
-  api:
+  dal:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
-    container_name: biopropose-api
-    ports:
-      - "4000:3000"          # REST API  →  http://localhost:4000
-      - "4001:3001"          # Yjs WebSocket  →  ws://localhost:4001
+      dockerfile: apps/dal/Dockerfile
+      network: host
+    container_name: biopropose-dal
     environment:
       NODE_ENV: production
-      PORT: 3000
+      DAL_PORT: 5000
 
-      # Database — connects to your existing MYSQL container
+      # Internal API key — BAL must present this on every request
+      DAL_API_KEY: ${DAL_API_KEY}
+
+      # Database connection (only the DAL knows these credentials)
       DB_TYPE: mysql
-      DB_HOST: host.docker.internal
+      DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: root
-      # WARNING: Set a strong password via DB_PASSWORD env var or a .env file.
       DB_PASSWORD: ${DB_PASSWORD:-}
       DB_NAME: biopropose
       DB_SSL: "false"
       DB_POOL_MAX: 20
       DB_POOL_MIN: 5
 
-      # ── AI Provider ──────────────────────────────────────
-      # Ollama  → AI_PROVIDER=ollama  (connects to your running Ollama)
-      # Claude  → AI_PROVIDER=claude + set ANTHROPIC_API_KEY below
-      # ─────────────────────────────────────────────────────
-      AI_PROVIDER: ${AI_PROVIDER:-ollama}
-
-      # Ollama — points to your existing ollama container
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:4b}
-      OLLAMA_TIMEOUT: 120000
-
-      # Claude / Anthropic API
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
-
-      # Export
-      EXPORT_DIR: /app/exports
-
-      # Email
-      EMAIL_TRANSPORT: console
-      EMAIL_FROM: noreply@biopropose.local
-
-      # CORS
-      CORS_ORIGIN: http://localhost
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # Linux compatibility
-    volumes:
-      - exports_data:/app/exports
     depends_on:
+      mysql:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/health',{headers:{'x-dal-api-key':process.env.DAL_API_KEY}},(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      - db-net
+      - app-net
+
+  # ----------------------------------------------------------
+  # Business Logic Layer / BAL (Express API + Yjs WebSocket)
+  # Talks to DAL over app-net. Never touches MySQL directly.
+  # ----------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      network: host
+    container_name: biopropose-api
+    ports:
+      - "4000:3000"          # REST API
+      - "4001:3001"          # Yjs WebSocket
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+
+      # DAL connection — BAL calls the DAL for all data operations
+      DAL_URL: http://dal:5000
+      DAL_API_KEY: ${DAL_API_KEY}
+
+      # AI Provider
+      AI_PROVIDER: ${AI_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:4b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      OLLAMA_TIMEOUT: 120000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
+
+      # Qdrant vector database (accessed via host gateway)
+      QDRANT_URL: http://host.docker.internal:32768
+
+      # Export
+      EXPORT_DIR: /app/exports
+      EXPORT_TIMEOUT: ${EXPORT_TIMEOUT:-30000}
+      PUPPETEER_HEADLESS: "true"
+
+      # Email
+      EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-console}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@biopropose.local}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+
+      # Storage
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+
+      # Error tracking (optional — leave blank to disable)
+      SENTRY_DSN: ${SENTRY_DSN:-}
+
+      # Salesforce integration (optional — feature disabled when SFDC_CLIENT_ID is absent)
+      SFDC_LOGIN_URL: ${SFDC_LOGIN_URL:-https://login.salesforce.com}
+      SFDC_CLIENT_ID: ${SFDC_CLIENT_ID:-}
+      SFDC_CLIENT_SECRET: ${SFDC_CLIENT_SECRET:-}
+      SFDC_USERNAME: ${SFDC_USERNAME:-}
+      SFDC_PASSWORD: ${SFDC_PASSWORD:-}
+      SFDC_API_VERSION: ${SFDC_API_VERSION:-v59.0}
+      SFDC_OPP_SEARCH_FIELD: ${SFDC_OPP_SEARCH_FIELD:-Name}
+
+      # CORS
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - exports_data:/app/exports
+    depends_on:
+      dal:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -120,17 +223,21 @@ services:
       resources:
         limits:
           memory: 1g
+    networks:
+      - app-net
+      - pub-net
 
   # ----------------------------------------------------------
-  # React Frontend (served by nginx)
+  # React Frontend — served by nginx, public-facing only
   # ----------------------------------------------------------
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      network: host
       args:
-        VITE_API_URL: http://localhost:4000
-        VITE_WS_URL: ws://localhost:4001
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:4001}
     container_name: biopropose-web
     ports:
       - "80:80"
@@ -138,15 +245,31 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    networks:
+      - pub-net
+
+# ============================================================
+# Networks — three isolated tiers
+# ============================================================
+networks:
+  db-net:
+    driver: bridge
+    internal: true        # No internet access — DB tier is completely isolated
+  app-net:
+    driver: bridge
+    internal: true        # No internet access — DAL↔BAL traffic only
+  pub-net:
+    driver: bridge        # Internet-reachable — BAL + Web only
 
 # ============================================================
 # Named Volumes
 # ============================================================
 volumes:
-  exports_data:     # Generated PDF/Word files
+  mysql_data:    # MySQL data — persists across restarts
+  exports_data:  # Generated PDF/Word files

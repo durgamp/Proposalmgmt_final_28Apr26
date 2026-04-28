@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { costsApi } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
@@ -44,7 +44,9 @@ export default function CostBreakdown({ proposalId }: Props) {
   const saveMutation = useMutation({
     mutationFn: () =>
       costsApi.saveCosts(proposalId, {
-        items: items.map((item, idx) => ({ ...item, sortOrder: idx })),
+        items: items
+          .filter((item) => item.description.trim().length > 0 && item.quantity > 0)
+          .map((item, idx) => ({ ...item, sortOrder: idx })),
         updatedBy: user!.email,
       }),
     onSuccess: () => {

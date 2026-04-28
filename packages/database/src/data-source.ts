@@ -25,7 +25,6 @@ const entities = [
   ExportedFileEntity,
 ];
 
-// Shared pool config for networked databases (tuned for ~1000 concurrent users)
 const POOL_CONFIG = {
   max: parseInt(process.env.DB_POOL_MAX || '20'),
   min: parseInt(process.env.DB_POOL_MIN || '5'),
@@ -34,33 +33,18 @@ const POOL_CONFIG = {
 };
 
 function buildDataSourceOptions(): DataSourceOptions {
-  const dbType = (process.env.DB_TYPE || 'sqlite') as 'sqlite' | 'postgres' | 'mysql' | 'mssql';
+  const dbType = (process.env.DB_TYPE || 'mysql') as 'mysql' | 'postgres' | 'mssql';
   const isProduction = process.env.NODE_ENV === 'production';
-
-  // Migration files live alongside this data-source file.
-  // __dirname resolves correctly for both ts-node (src/) and compiled JS (dist/).
   const migrations = [`${__dirname}/migrations/*.{ts,js}`];
-
-  if (dbType === 'sqlite') {
-    return {
-      type: 'better-sqlite3',
-      database: process.env.SQLITE_DB_PATH || './biopropose.sqlite',
-      entities,
-      migrations,
-      // synchronize is ALWAYS false — schema changes must go through migrations
-      synchronize: false,
-      logging: !isProduction,
-    };
-  }
 
   if (dbType === 'mysql') {
     return {
       type: 'mysql',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '3306'),
-      username: process.env.DB_USER || 'biopropose',
+      host:     process.env.DB_HOST     || 'localhost',
+      port:     parseInt(process.env.DB_PORT || '3306'),
+      username: process.env.DB_USER     || 'root',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'biopropose',
+      database: process.env.DB_NAME     || 'biopropose',
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
       entities,
       migrations,
@@ -71,7 +55,7 @@ function buildDataSourceOptions(): DataSourceOptions {
         waitForConnections: true,
         queueLimit: 0,
         connectTimeout: POOL_CONFIG.acquire,
-        idleTimeout: POOL_CONFIG.idle,
+        idleTimeout:    POOL_CONFIG.idle,
       },
     };
   }
@@ -79,11 +63,11 @@ function buildDataSourceOptions(): DataSourceOptions {
   if (dbType === 'postgres') {
     return {
       type: 'postgres',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '5432'),
-      username: process.env.DB_USER || 'postgres',
+      host:     process.env.DB_HOST     || 'localhost',
+      port:     parseInt(process.env.DB_PORT || '5432'),
+      username: process.env.DB_USER     || 'postgres',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'biopropose',
+      database: process.env.DB_NAME     || 'biopropose',
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
       entities,
       migrations,
@@ -96,13 +80,13 @@ function buildDataSourceOptions(): DataSourceOptions {
   if (dbType === 'mssql') {
     return {
       type: 'mssql',
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '1433'),
-      username: process.env.DB_USER || 'sa',
+      host:     process.env.DB_HOST     || 'localhost',
+      port:     parseInt(process.env.DB_PORT || '1433'),
+      username: process.env.DB_USER     || 'sa',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'biopropose',
+      database: process.env.DB_NAME     || 'biopropose',
       options: {
-        encrypt: process.env.DB_SSL === 'true',
+        encrypt:                process.env.DB_SSL === 'true',
         trustServerCertificate: process.env.DB_SSL !== 'true',
       },
       entities,
@@ -113,7 +97,7 @@ function buildDataSourceOptions(): DataSourceOptions {
     };
   }
 
-  throw new Error(`Unsupported DB_TYPE: ${dbType}. Use sqlite, postgres, mysql, or mssql.`);
+  throw new Error(`Unsupported DB_TYPE: "${dbType}". Supported values: mysql, postgres, mssql.`);
 }
 
 export const AppDataSource = new DataSource(buildDataSourceOptions());
@@ -121,7 +105,7 @@ export const AppDataSource = new DataSource(buildDataSourceOptions());
 export async function initializeDatabase(): Promise<DataSource> {
   if (!AppDataSource.isInitialized) {
     await AppDataSource.initialize();
-    console.log(`[Database] Connected — type: ${process.env.DB_TYPE || 'sqlite'}`);
+    console.log(`[Database] Connected — type: ${process.env.DB_TYPE || 'mysql'}, host: ${process.env.DB_HOST || 'localhost'}`);
   }
   return AppDataSource;
 }

@@ -20,6 +20,11 @@ export const updateCommentSchema = z.object({
   userEmail: z.string().email(),
 });
 
-export type UpdateSectionDto = z.infer<typeof updateSectionSchema>;
-export type CreateCommentDto = z.infer<typeof createCommentSchema>;
-export type UpdateCommentDto = z.infer<typeof updateCommentSchema>;
+export const deleteCommentSchema = z.object({
+  userEmail: z.string().email(),
+});
+
+export type UpdateSectionDto  = z.infer<typeof updateSectionSchema>;
+export type CreateCommentDto  = z.infer<typeof createCommentSchema>;
+export type UpdateCommentDto  = z.infer<typeof updateCommentSchema>;
+export type DeleteCommentDto  = z.infer<typeof deleteCommentSchema>;

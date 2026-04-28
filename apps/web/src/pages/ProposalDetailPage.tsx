@@ -7,6 +7,7 @@ import {
 import { useProposal } from '../hooks/useProposals';
 import { useSections } from '../hooks/useSections';
 import SectionEditor from '../components/editor/SectionEditor';
+import FlowchartSectionEditor from '../components/editor/FlowchartSectionEditor';
 import CostBreakdown from '../components/cost/CostBreakdown';
 import GanttTimeline from '../components/timeline/GanttTimeline';
 import AuditLogPanel from '../components/proposals/AuditLogPanel';
@@ -254,12 +255,20 @@ export default function ProposalDetailPage() {
           {/* Editor pane */}
           <div className="col-span-9">
             {activeSectionKey && currentSection ? (
-              <SectionEditor
-                key={activeSectionKey}
-                proposalId={proposal.id}
-                section={currentSection}
-                proposal={proposal}
-              />
+              currentSection.sectionKey === 'flowchart' ? (
+                <FlowchartSectionEditor
+                  key={activeSectionKey}
+                  proposalId={proposal.id}
+                  section={currentSection}
+                />
+              ) : (
+                <SectionEditor
+                  key={activeSectionKey}
+                  proposalId={proposal.id}
+                  section={currentSection}
+                  proposal={proposal}
+                />
+              )
             ) : (
               <div className="card flex items-center justify-center h-64 text-gray-400 text-sm">
                 Select a section from the left to start editing

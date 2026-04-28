@@ -35,6 +35,15 @@ interface ReviewRequestPayload {
   recipients: string[];
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 class EmailService {
   private transporter: Transporter | null = null;
 
@@ -142,10 +151,10 @@ class EmailService {
       'Proposal Stage Advanced',
       `<p>The following proposal has been advanced to a new stage.</p>
       <div class="action-box">
-        <p><strong>Proposal:</strong> ${payload.proposalName} <span class="badge">${payload.proposalCode}</span></p>
-        <p><strong>From Stage:</strong> ${payload.fromStage}</p>
-        <p><strong>To Stage:</strong> <strong>${payload.toStage}</strong></p>
-        <p><strong>Advanced by:</strong> ${payload.advancedBy}</p>
+        <p><strong>Proposal:</strong> ${escapeHtml(payload.proposalName)} <span class="badge">${escapeHtml(payload.proposalCode)}</span></p>
+        <p><strong>From Stage:</strong> ${escapeHtml(payload.fromStage)}</p>
+        <p><strong>To Stage:</strong> <strong>${escapeHtml(payload.toStage)}</strong></p>
+        <p><strong>Advanced by:</strong> ${escapeHtml(payload.advancedBy)}</p>
       </div>
       <p>Please log in to BioPropose to review and take any required action.</p>`,
     );
@@ -162,10 +171,10 @@ class EmailService {
 
     const html = this.baseTemplate(
       'New Comment on Proposal',
-      `<p><strong>${payload.commenterName}</strong> added a comment on the <strong>${payload.sectionTitle}</strong> section.</p>
+      `<p><strong>${escapeHtml(payload.commenterName)}</strong> added a comment on the <strong>${escapeHtml(payload.sectionTitle)}</strong> section.</p>
       <div class="action-box">
-        <p><strong>Proposal:</strong> ${payload.proposalName} <span class="badge">${payload.proposalCode}</span></p>
-        <p><em>"${payload.commentPreview}${payload.commentPreview.length >= 200 ? '...' : ''}"</em></p>
+        <p><strong>Proposal:</strong> ${escapeHtml(payload.proposalName)} <span class="badge">${escapeHtml(payload.proposalCode)}</span></p>
+        <p><em>"${escapeHtml(payload.commentPreview)}${payload.commentPreview.length >= 200 ? '...' : ''}"</em></p>
       </div>`,
     );
 
@@ -185,9 +194,9 @@ class EmailService {
       `Action Required: ${reviewLabel}`,
       `<p>Your review is required for the following proposal.</p>
       <div class="action-box">
-        <p><strong>Proposal:</strong> ${payload.proposalName} <span class="badge">${payload.proposalCode}</span></p>
-        <p><strong>Review Type:</strong> ${reviewLabel}</p>
-        <p><strong>Requested by:</strong> ${payload.requestedBy}</p>
+        <p><strong>Proposal:</strong> ${escapeHtml(payload.proposalName)} <span class="badge">${escapeHtml(payload.proposalCode)}</span></p>
+        <p><strong>Review Type:</strong> ${escapeHtml(reviewLabel)}</p>
+        <p><strong>Requested by:</strong> ${escapeHtml(payload.requestedBy)}</p>
       </div>
       <p>Please log in to BioPropose to complete your review.</p>`,
     );

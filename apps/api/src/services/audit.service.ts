@@ -1,5 +1,6 @@
-import { AppDataSource } from '@biopropose/database';
-import { AuditLogEntity } from '@biopropose/database';
+import { dal } from '../clients/dal.client';
+import type { AuditPayload } from '../clients/dal.client';
+import type { AuditLogEntity } from '@biopropose/database';
 import { AuditAction } from '@biopropose/shared-types';
 
 export interface CreateAuditParams {
@@ -13,49 +14,25 @@ export interface CreateAuditParams {
 }
 
 export class AuditService {
-  private get repo() {
-    return AppDataSource.getRepository(AuditLogEntity);
-  }
-
   async log(params: CreateAuditParams): Promise<AuditLogEntity> {
-    const entry = this.repo.create({
+    const payload: AuditPayload = {
       proposalId: params.proposalId,
-      userEmail: params.userEmail,
-      userName: params.userName,
-      action: params.action,
-      details: params.details,
-    });
-
-    if (params.changes) entry.changes = params.changes;
-    if (params.snapshot) entry.snapshot = params.snapshot;
-
-    return this.repo.save(entry);
+      userEmail:  params.userEmail,
+      userName:   params.userName,
+      action:     params.action,
+      details:    params.details,
+    };
+    if (params.changes)  payload.changes  = params.changes;
+    if (params.snapshot) payload.snapshot = params.snapshot;
+    return dal.logAudit(payload) as Promise<AuditLogEntity>;
   }
 
-  async getByProposal(
-    proposalId: string,
-    page = 1,
-    limit = 50,
-  ): Promise<{ items: AuditLogEntity[]; total: number }> {
-    const [items, total] = await this.repo.findAndCount({
-      where: { proposalId },
-      order: { timestamp: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
-    return { items, total };
+  async getByProposal(proposalId: string, page = 1, limit = 50) {
+    return dal.getAuditLogs(proposalId, page, limit);
   }
 
-  async getAll(
-    page = 1,
-    limit = 50,
-  ): Promise<{ items: AuditLogEntity[]; total: number }> {
-    const [items, total] = await this.repo.findAndCount({
-      order: { timestamp: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
-    return { items, total };
+  async getAll(page = 1, limit = 50) {
+    return dal.getAllAuditLogs(page, limit);
   }
 }
 

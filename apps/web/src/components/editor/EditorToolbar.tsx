@@ -2,6 +2,7 @@ import type { Editor } from '@tiptap/react';
 import {
   Bold, Italic, Underline, Strikethrough, AlignLeft, AlignCenter,
   AlignRight, List, ListOrdered, Highlighter, Undo, Redo,
+  Table, Plus, Minus, Columns, Rows, Trash2,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -93,6 +94,36 @@ export default function EditorToolbar({ editor }: Props) {
         <option value="2">Heading 2</option>
         <option value="3">Heading 3</option>
       </select>
+
+      <div className="w-px h-5 bg-gray-200 mx-1" />
+
+      {/* Table controls */}
+      <ToolbarButton
+        onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+        title="Insert Table"
+      >
+        <Table size={15} />
+      </ToolbarButton>
+
+      {editor.isActive('table') && (
+        <>
+          <ToolbarButton onClick={() => editor.chain().focus().addColumnBefore().run()} title="Add column before">
+            <Columns size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().addRowAfter().run()} title="Add row below">
+            <Rows size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().deleteColumn().run()} title="Delete column">
+            <Minus size={15} />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().deleteRow().run()} title="Delete row">
+            <Plus size={15} className="rotate-45" />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => editor.chain().focus().deleteTable().run()} title="Delete table">
+            <Trash2 size={15} className="text-red-500" />
+          </ToolbarButton>
+        </>
+      )}
 
       <div className="ml-auto flex gap-0.5">
         <ToolbarButton onClick={() => editor.chain().focus().undo().run()} title="Undo">

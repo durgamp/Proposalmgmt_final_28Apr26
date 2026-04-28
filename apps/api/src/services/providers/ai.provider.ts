@@ -14,7 +14,7 @@ export interface AiDraftResult {
 }
 
 export interface IAiProvider {
-  generateDraft(dto: AiDraftDto & { prompt: string }): Promise<AiDraftResult>;
-  streamDraft(dto: AiDraftDto & { prompt: string }, onChunk: (text: string) => void): Promise<void>;
+  generateDraft(dto: AiDraftDto & { prompt: string; system?: string }): Promise<AiDraftResult>;
+  streamDraft(dto: AiDraftDto & { prompt: string; system?: string }, onChunk: (text: string) => void): Promise<void>;
   checkHealth(): Promise<AiHealthResult>;
 }

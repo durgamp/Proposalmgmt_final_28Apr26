@@ -52,7 +52,7 @@ export const bulkSaveStagesSchema = z.object({
 });
 
 export const exportSchema = z.object({
-  format: z.enum(['pdf', 'word']),
+  format: z.enum(['pdf', 'word']).optional(),
   exportedBy: z.string().min(1),
   includeSections: z.array(z.string()).optional(),
   includeCosts: z.boolean().optional(),

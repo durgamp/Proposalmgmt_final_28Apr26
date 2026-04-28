@@ -16,11 +16,11 @@ export class AppError extends Error {
 
 export function errorHandler(
   err: Error,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
-  const requestId = req.id ?? 'unknown';
+  const requestId = (req as Request & { id?: string }).id ?? 'unknown';
 
   // Zod validation errors
   if (err instanceof ZodError) {

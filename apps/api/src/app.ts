@@ -15,6 +15,7 @@ import analyticsRouter from './routes/analytics.routes';
 import exportRouter from './routes/export.routes';
 import aiRouter from './routes/ai.routes';
 import templatesRouter from './routes/templates.routes';
+import sfdcRouter from './routes/sfdc.routes';
 
 const app = express();
 
@@ -101,6 +102,15 @@ const exportLimiter = rateLimit({
   message: { error: 'Export limit reached, please wait before exporting again.' },
 });
 
+// SFDC lookup: 30 calls/min per IP (external API — protect against hammering)
+const sfdcLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Salesforce lookup limit reached, please wait a moment.' },
+});
+
 app.use('/api', apiLimiter);
 app.use('/api/ai', aiLimiter);
 
@@ -152,6 +162,7 @@ app.use('/api/proposals/:proposalId/exports', exportLimiter, exportRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/templates', templatesRouter);
+app.use('/api/sfdc', sfdcLimiter, sfdcRouter);
 
 // ------------------------------------------------------------------
 // 404 & error handler
